@@ -1,4 +1,6 @@
 const express = require("express");
+const router = express.Router();
+
 const cors = require("cors");
 const helmet = require("helmet");
 const morgan = require("morgan");
@@ -6,6 +8,13 @@ const config = require("../config/default");
 const { getLogger } = require("./utils/logger");
 const { closeAllBrowsers } = require("./services/browser.service");
 const { checkConnection } = require("./services/supabase.service");
+
+const applyRoutes = require("./api/routes/apply.routes");
+const applyFilterRoutes = require("./api/routes/apply-filter.routes");
+const statusRoutes = require("./api/routes/status.routes");
+const statsRoutes = require("./api/routes/stats.routes");
+const platformsRoutes = require("./api/routes/platforms.routes");
+const scrapeRoutes = require("./api/routes/scrape.routes");
 
 // Инициализация логгера
 const logger = getLogger("server");
@@ -40,7 +49,12 @@ checkConnection()
   });
 
 // Регистрация маршрутов API
-app.use("/api", require("./api/routes"));
+app.post("/apply-jobs", applyRoutes);
+app.post("/apply-by-filter", applyFilterRoutes);
+app.get("/status", statusRoutes);
+app.get("/stats", statsRoutes);
+app.post("/platforms", platformsRoutes);
+app.post("/scrape-jobs", scrapeRoutes);
 
 // Маршрут для проверки работоспособности API
 app.get("/health", (req, res) => {
@@ -76,11 +90,11 @@ app.use((err, req, res, next) => {
 });
 
 // Запуск сервера
-const server = app.listen(config.port, () => {
+const server = app.listen(config.app.port, () => {
   logger.info(
-    `Server running on port ${config.port} in ${config.environment} mode`
+    `Server running on port ${config.app.port} in ${config.app.env} mode`
   );
-  logger.info(`API available at http://localhost:${config.port}/api`);
+  logger.info(`API available at http://localhost:${config.app.port}`);
 });
 
 // Корректное завершение работы при получении сигналов
