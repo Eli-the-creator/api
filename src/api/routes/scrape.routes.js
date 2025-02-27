@@ -1,6 +1,6 @@
 const express = require("express");
 const { apiKeyAuth } = require("../middlewares/auth.middleware");
-const { scrapeJobs } = require("../../services/scraping.service");
+const scrapers = require("../../services/scrapers");
 const telegramService = require("../../services/telegram.service");
 const { getLogger } = require("../../utils/logger");
 const { body, validationResult } = require("express-validator");
@@ -29,6 +29,16 @@ const validateScrapeJobs = [
     }),
   body("country").optional().isString().withMessage("Country must be a string"),
   body("jobType").optional().isString().withMessage("jobType must be a string"),
+  // Новые параметры
+  body("position")
+    .optional()
+    .isString()
+    .isIn(["junior", "middle", "senior"])
+    .withMessage("position must be one of: junior, middle, senior"),
+  body("postsQuantity")
+    .optional()
+    .isInt({ min: 1, max: 100 })
+    .withMessage("postsQuantity must be a number between 1 and 100"),
   (req, res, next) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -51,13 +61,16 @@ const validateScrapeJobs = [
  * @access Private
  */
 router.post("/", apiKeyAuth, validateScrapeJobs, async (req, res) => {
-  const { platform, keywords, country, jobType } = req.body;
+  const { platform, keywords, country, jobType, position, postsQuantity } =
+    req.body;
 
   logger.info(`Received request to scrape jobs`, {
     platform,
     keywords: Array.isArray(keywords) ? keywords.join(", ") : keywords,
     country,
     jobType,
+    position,
+    postsQuantity,
   });
 
   try {
@@ -66,13 +79,19 @@ router.post("/", apiKeyAuth, validateScrapeJobs, async (req, res) => {
       ? keywords.join(" ")
       : keywords;
 
-    // Запускаем скрейпинг
-    const result = await scrapeJobs({
-      platform,
+    // Получаем соответствующий скрейпер для платформы
+    const scraper = scrapers.getScraper(platform);
+
+    // Запускаем скрейпинг с обновленными параметрами
+    const result = await scraper.scrape({
       keywords: preparedKeywords,
       country,
       jobType: jobType || "Remote",
+      position,
+      postsQuantity: postsQuantity || 20, // По умолчанию собираем 20 постов
     });
+
+    console.log("Parsing results:", result);
 
     // Логируем результат в Telegram
     try {
@@ -81,6 +100,7 @@ router.post("/", apiKeyAuth, validateScrapeJobs, async (req, res) => {
         keywords: preparedKeywords,
         country: country || "Not specified",
         jobType: jobType || "Remote",
+        position: position || "Any",
         totalJobs: result.totalJobs,
         newJobs: result.newJobs,
         duplicates: result.duplicates,

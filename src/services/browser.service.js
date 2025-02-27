@@ -1,282 +1,186 @@
 const { chromium } = require("playwright");
 const config = require("../../config/default");
 const { getLogger } = require("../utils/logger");
-const { BrowserError } = require("../utils/errors");
-const { withRetry, randomDelay } = require("../utils/helpers");
 
 const logger = getLogger("BrowserService");
 
-// Хранилище для активных браузеров и контекстов
-let browserInstances = {};
-
-/**
- * Инициализирует сервис браузера
- */
-const initBrowserService = async () => {
-  logger.info("Initializing browser service");
-
-  // При инициализации не создаем экземпляры браузера
-  // Они будут созданы по требованию для каждой платформы
-  browserInstances = {};
-};
-
-/**
- * Закрывает все активные экземпляры браузеров
- */
-const closeBrowsers = async () => {
-  logger.info("Closing all browser instances");
-
-  for (const [platform, browser] of Object.entries(browserInstances)) {
-    try {
-      if (browser && !browser.isConnected()) {
-        await browser.close();
-        logger.info(`Closed browser for platform: ${platform}`);
-      }
-    } catch (error) {
-      logger.error(`Error closing browser for platform ${platform}`, {
-        error: error.message,
-      });
-    }
-  }
-
-  browserInstances = {};
-};
+// Хранилище для запущенных экземпляров браузеров
+const browsers = new Map();
 
 /**
  * Получает или создает экземпляр браузера для указанной платформы
- * @param {string} platform - Название платформы
- * @param {Object} options - Дополнительные опции
- * @returns {Promise<Object>} - Экземпляр браузера и страница
+ * @param {String} platform - Название платформы
+ * @param {Object} options - Опции для инициализации браузера
+ * @returns {Promise<Object>} - Объект с экземплярами браузера, контекста и страницы
  */
-const getBrowserForPlatform = async (platform, options = {}) => {
-  const {
-    useExisting = true,
-    proxy = null,
-    newContext = false,
-    extraBrowserOptions = {},
-  } = options;
-
-  // Если у нас уже есть активный браузер для этой платформы и мы хотим его использовать
-  if (
-    useExisting &&
-    browserInstances[platform] &&
-    browserInstances[platform].isConnected()
-  ) {
-    logger.debug(`Using existing browser for platform: ${platform}`);
-
-    // Создаем новый контекст если запрошено
-    const browser = browserInstances[platform];
-    const context = newContext
-      ? await browser.newContext(getContextOptions(proxy))
-      : browser.contexts()[0] ||
-        (await browser.newContext(getContextOptions(proxy)));
-
-    const page = await context.newPage();
-    return { browser, context, page };
-  }
-
-  // Иначе создаем новый экземпляр браузера
-  logger.info(`Creating new browser for platform: ${platform}`);
+async function getBrowserForPlatform(platform, options = {}) {
+  const { proxy, useExisting = true, extraBrowserOptions = {} } = options;
+  const platformKey = platform.toLowerCase();
 
   try {
-    // Запускаем браузер с заданными настройками
-    const browser = await withRetry(
-      () =>
-        chromium.launch({
-          headless: config.browser.headless,
-          slowMo: config.browser.slowMo,
-          timeout: config.browser.timeout,
+    // Если нужно использовать существующий экземпляр и он уже запущен
+    if (
+      useExisting &&
+      browsers.has(platformKey) &&
+      browsers.get(platformKey).browser
+    ) {
+      logger.info(`Using existing browser for platform: ${platform}`);
+
+      // Получаем существующий браузер
+      const { browser } = browsers.get(platformKey);
+
+      // Проверяем, что браузер все еще открыт
+      if (browser.isConnected()) {
+        // Создаем новый контекст для изоляции сессий
+        const context = await browser.newContext({
+          userAgent: getRandomUserAgent(),
+          viewport: { width: 1920, height: 1080 },
           ...extraBrowserOptions,
-        }),
-      {
-        retries: 2,
-        onRetry: (error, attempt) => {
-          logger.warn(
-            `Failed to launch browser (attempt ${attempt + 1}): ${error.message}`
-          );
-        },
+        });
+
+        // Создаем новую страницу в контексте
+        const page = await context.newPage();
+
+        return { browser, context, page };
+      } else {
+        // Браузер закрылся, удаляем его из кеша
+        browsers.delete(platformKey);
+        logger.warn(
+          `Browser for ${platform} was disconnected, creating new instance`
+        );
       }
-    );
+    }
 
-    // Сохраняем ссылку на новый экземпляр
-    browserInstances[platform] = browser;
+    // Создаем новый экземпляр браузера
+    logger.info(`Creating new browser for platform: ${platform}`);
 
-    // Создаем контекст и страницу
-    const context = await browser.newContext(getContextOptions(proxy));
+    // Настраиваем опции запуска браузера
+    const launchOptions = {
+      headless: config.browser.headless,
+      args: [
+        "--disable-web-security",
+        "--disable-features=IsolateOrigins,site-per-process",
+        "--disable-site-isolation-trials",
+      ],
+      ...extraBrowserOptions,
+    };
+
+    // Добавляем прокси, если указано
+    if (proxy) {
+      launchOptions.proxy = proxy;
+    }
+
+    // Запускаем браузер с указанными опциями
+    const browser = await chromium.launch(launchOptions);
+
+    // Настраиваем обработчик закрытия браузера
+    browser.on("disconnected", () => {
+      logger.info(`Browser for platform ${platform} has been disconnected`);
+      // Удаляем браузер из кеша при закрытии
+      if (browsers.has(platformKey)) {
+        browsers.delete(platformKey);
+      }
+    });
+
+    // Создаем контекст с настройками
+    const context = await browser.newContext({
+      userAgent: getRandomUserAgent(),
+      viewport: { width: 1920, height: 1080 },
+      // Установка таймаута страницы
+      timezoneId: "Europe/Berlin",
+    });
+
+    // Создаем новую страницу
     const page = await context.newPage();
+
+    // Настраиваем таймауты для страницы
+    page.setDefaultTimeout(30000);
+    page.setDefaultNavigationTimeout(30000);
+
+    // Сохраняем экземпляр браузера в кеш
+    browsers.set(platformKey, { browser, lastUsed: Date.now() });
 
     return { browser, context, page };
   } catch (error) {
-    logger.errorWithStack(
-      `Failed to create browser for platform: ${platform}`,
-      error
-    );
-    throw new BrowserError(`Failed to create browser: ${error.message}`);
+    logger.errorWithStack(`Error initializing browser for ${platform}`, error);
+    throw error;
   }
-};
+}
 
 /**
- * Формирует опции для создания контекста браузера
- * @param {string|null} proxy - Строка прокси
- * @returns {Object} - Опции контекста
+ * Возвращает случайный User-Agent для имитации различных браузеров
+ * @returns {String} - Строка User-Agent
  */
-const getContextOptions = (proxy = null) => {
-  const options = {
-    viewport: { width: 1366, height: 768 },
-    userAgent:
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36",
-    deviceScaleFactor: 1,
-    isMobile: false,
-    hasTouch: false,
-    defaultBrowserType: "chromium",
-  };
+function getRandomUserAgent() {
+  const userAgents = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:90.0) Gecko/20100101 Firefox/90.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.164 Safari/537.36",
+  ];
 
-  // Добавляем прокси если он указан
-  if (proxy) {
-    options.proxy = { server: proxy };
-  }
-
-  return options;
-};
+  return userAgents[Math.floor(Math.random() * userAgents.length)];
+}
 
 /**
- * Делает скриншот текущей страницы
- * @param {Object} page - Экземпляр страницы
- * @param {string} name - Имя файла скриншота
- * @returns {Promise<string>} - Путь к файлу скриншота
- */
-const takeScreenshot = async (page, name) => {
-  const path = `./logs/screenshots/${name}_${Date.now()}.png`;
-
-  try {
-    await page.screenshot({ path, fullPage: true });
-    logger.debug(`Screenshot saved: ${path}`);
-    return path;
-  } catch (error) {
-    logger.error(`Failed to take screenshot: ${error.message}`);
-    return null;
-  }
-};
-
-/**
- * Выполняет клик на элемент с заданным селектором
- * @param {Object} page - Экземпляр страницы
- * @param {string} selector - CSS селектор
- * @param {Object} options - Дополнительные опции
+ * Закрывает все открытые браузеры перед завершением работы сервера
  * @returns {Promise<void>}
  */
-const clickElement = async (page, selector, options = {}) => {
-  const {
-    timeout = 5000,
-    waitForNavigation = false,
-    delayBefore = true,
-  } = options;
+async function closeAllBrowsers() {
+  logger.info(`Closing all browsers (${browsers.size} instances)`);
 
-  try {
-    // Ждем появления элемента
-    await page.waitForSelector(selector, { timeout });
+  const closePromises = [];
 
-    // Добавляем случайную задержку перед кликом для имитации человека
-    if (delayBefore) {
-      await page.waitForTimeout(randomDelay(300, 800));
+  for (const [platform, { browser }] of browsers.entries()) {
+    try {
+      if (browser && browser.isConnected()) {
+        logger.info(`Closing browser for platform: ${platform}`);
+        closePromises.push(browser.close());
+      }
+    } catch (error) {
+      logger.error(`Error closing browser for ${platform}: ${error.message}`);
     }
-
-    if (waitForNavigation) {
-      // Ждем навигацию после клика
-      await Promise.all([
-        page.waitForNavigation({ timeout, waitUntil: "networkidle" }),
-        page.click(selector),
-      ]);
-    } else {
-      // Просто кликаем
-      await page.click(selector);
-    }
-
-    logger.debug(`Clicked element: ${selector}`);
-  } catch (error) {
-    logger.error(`Failed to click element ${selector}: ${error.message}`);
-    throw new BrowserError(
-      `Failed to click element ${selector}: ${error.message}`
-    );
   }
-};
+
+  // Очищаем хранилище
+  browsers.clear();
+
+  // Ждем завершения всех процессов закрытия
+  await Promise.allSettled(closePromises);
+
+  logger.info("All browsers closed");
+}
 
 /**
- * Заполняет поле ввода заданным текстом
- * @param {Object} page - Экземпляр страницы
- * @param {string} selector - CSS селектор
- * @param {string} text - Текст для ввода
- * @param {Object} options - Дополнительные опции
+ * Закрывает неиспользуемые экземпляры браузеров
  * @returns {Promise<void>}
  */
-const fillInput = async (page, selector, text, options = {}) => {
-  const { timeout = 5000, clearFirst = true, typeDelay = 30 } = options;
+async function cleanupBrowsers() {
+  const now = Date.now();
+  const inactiveThreshold = 30 * 60 * 1000; // 30 минут
 
-  try {
-    // Ждем появления элемента
-    await page.waitForSelector(selector, { timeout });
-
-    // Очищаем поле если нужно
-    if (clearFirst) {
-      await page.fill(selector, "");
+  for (const [platform, { browser, lastUsed }] of browsers.entries()) {
+    // Если браузер не используется более 30 минут
+    if (now - lastUsed > inactiveThreshold) {
+      try {
+        if (browser && browser.isConnected()) {
+          logger.info(`Closing inactive browser for platform: ${platform}`);
+          await browser.close();
+        }
+        browsers.delete(platform);
+      } catch (error) {
+        logger.error(`Error closing browser for ${platform}: ${error.message}`);
+      }
     }
-
-    // Вводим текст с задержкой для имитации человека
-    await page.fill(selector, text, { delay: typeDelay });
-
-    logger.debug(`Filled input ${selector} with text (${text.length} chars)`);
-  } catch (error) {
-    logger.error(`Failed to fill input ${selector}: ${error.message}`);
-    throw new BrowserError(
-      `Failed to fill input ${selector}: ${error.message}`
-    );
   }
-};
+}
 
-/**
- * Проверяет существование элемента на странице
- * @param {Object} page - Экземпляр страницы
- * @param {string} selector - CSS селектор
- * @param {Object} options - Дополнительные опции
- * @returns {Promise<boolean>} - true если элемент существует
- */
-const elementExists = async (page, selector, options = {}) => {
-  const { timeout = 1000 } = options;
-
-  try {
-    await page.waitForSelector(selector, { timeout });
-    return true;
-  } catch (error) {
-    return false;
-  }
-};
-
-/**
- * Получает текст элемента
- * @param {Object} page - Экземпляр страницы
- * @param {string} selector - CSS селектор
- * @param {Object} options - Дополнительные опции
- * @returns {Promise<string>} - Текст элемента
- */
-const getElementText = async (page, selector, options = {}) => {
-  const { timeout = 5000 } = options;
-
-  try {
-    await page.waitForSelector(selector, { timeout });
-    return await page.textContent(selector);
-  } catch (error) {
-    logger.error(`Failed to get element text ${selector}: ${error.message}`);
-    return null;
-  }
-};
+// Запускаем периодическую очистку неиспользуемых браузеров
+setInterval(cleanupBrowsers, 15 * 60 * 1000); // Каждые 15 минут
 
 module.exports = {
-  initBrowserService,
-  closeBrowsers,
   getBrowserForPlatform,
-  takeScreenshot,
-  clickElement,
-  fillInput,
-  elementExists,
-  getElementText,
+  closeAllBrowsers,
 };
