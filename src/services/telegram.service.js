@@ -1,3 +1,7 @@
+// // Создаем и экспортируем сервис
+// const telegramService = new TelegramService();
+// module.exports = telegramService;
+
 const axios = require("axios");
 const config = require("../../config/default");
 const { getLogger } = require("../utils/logger");
@@ -11,7 +15,9 @@ class TelegramService {
   constructor() {
     this.token = process.env.TELEGRAM_BOT_TOKEN;
     this.chatId = process.env.TELEGRAM_CHAT_ID;
-    this.baseUrl = `https://api.telegram.org/bot${this.token}`;
+    this.baseUrl = this.token
+      ? `https://api.telegram.org/bot${this.token}`
+      : null;
     this.enabled = this.token && this.chatId;
 
     if (!this.enabled) {
@@ -98,6 +104,48 @@ ${successCount > 0 ? "✅ Процесс завершен успешно!" : "�
   }
 
   /**
+   * Отправляет уведомление о результатах скрейпинга вакансий
+   * @param {Object} results - Результаты скрейпинга
+   * @returns {Promise<boolean>} - Результат отправки
+   */
+  async notifyScrapingResults(results) {
+    const {
+      platform,
+      keywords,
+      totalJobs,
+      newJobs,
+      duplicates,
+      executionTime,
+      sampleTitles,
+    } = results;
+
+    // Формируем сообщение
+    const message = `
+<b>🔍 Результаты скрейпинга вакансий</b>
+
+📝 <b>Параметры поиска:</b>
+• Платформа: ${platform}
+• Ключевые слова: ${keywords}
+
+📊 <b>Статистика:</b>
+• Всего найдено: ${totalJobs}
+• Новых вакансий: ${newJobs}
+• Дубликатов: ${duplicates}
+• Время выполнения: ${Math.round(executionTime / 1000)} сек.
+
+${
+  sampleTitles && sampleTitles.length > 0
+    ? `📋 <b>Примеры вакансий:</b>\n• ${sampleTitles.join("\n• ")}`
+    : ""
+}
+
+${newJobs > 0 ? "✅ Найдены новые вакансии!" : "⚠️ Новых вакансий не найдено."}
+    `;
+
+    return this.sendMessage(message);
+  }
+
+  /**
    * Отправляет уведомление об ошибке
    * @param {string} errorType - Тип ошибки
    * @param {string} message - Сообщение об ошибке
@@ -107,7 +155,7 @@ ${successCount > 0 ? "✅ Процесс завершен успешно!" : "�
   async notifyError(errorType, message, details = {}) {
     // Формируем сообщение об ошибке
     let errorMessage = `
-<b>⚠️ Ошибка в системе откликов</b>
+<b>⚠️ Ошибка в системе</b>
 
 <b>Тип ошибки:</b> ${errorType}
 <b>Сообщение:</b> ${message}

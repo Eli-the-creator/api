@@ -13,7 +13,8 @@ const applyFilterRoutes = require("./api/routes/apply-filter.routes");
 const statusRoutes = require("./api/routes/status.routes");
 const statsRoutes = require("./api/routes/stats.routes");
 const platformsRoutes = require("./api/routes/platforms.routes");
-
+const scrapeRoutes = require("./api/routes/scrape.routes");
+//
 // Инициализация приложения
 const app = express();
 
@@ -41,6 +42,7 @@ app.use(`${apiPrefix}/apply-by-filter`, applyFilterRoutes);
 app.use(`${apiPrefix}/status`, statusRoutes);
 app.use(`${apiPrefix}/stats`, statsRoutes);
 app.use(`${apiPrefix}/platforms`, platformsRoutes);
+app.use(`${apiPrefix}/scrape-jobs`, scrapeRoutes);
 
 // Обработка 404
 app.use((req, res) => {
