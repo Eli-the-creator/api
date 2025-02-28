@@ -1,6 +1,4 @@
 const express = require("express");
-const router = express.Router();
-
 const cors = require("cors");
 const helmet = require("helmet");
 const morgan = require("morgan");
@@ -8,6 +6,7 @@ const config = require("../config/default");
 const { getLogger } = require("./utils/logger");
 const { closeAllBrowsers } = require("./services/browser.service");
 const { checkConnection } = require("./services/supabase.service");
+const { errorMiddleware } = require("./api/middlewares/error.middleware");
 
 const applyRoutes = require("./api/routes/apply.routes");
 const applyFilterRoutes = require("./api/routes/apply-filter.routes");
@@ -48,13 +47,14 @@ checkConnection()
     logger.error(`Error checking Supabase connection: ${err.message}`);
   });
 
-// Регистрация маршрутов API
-app.post("/apply-jobs", applyRoutes);
-app.post("/apply-by-filter", applyFilterRoutes);
-app.get("/status", statusRoutes);
-app.get("/stats", statsRoutes);
-app.post("/platforms", platformsRoutes);
-app.post("/scrape-jobs", scrapeRoutes);
+// Регистрация маршрутов API - исправлено здесь
+// Правильный способ - использовать app.use() и указать базовый путь
+app.use("/api/apply-jobs", applyRoutes);
+app.use("/api/apply-by-filter", applyFilterRoutes);
+app.use("/api/status", statusRoutes);
+app.use("/api/stats", statsRoutes);
+app.use("/api/platforms", platformsRoutes);
+app.use("/api/scrape-jobs", scrapeRoutes);
 
 // Маршрут для проверки работоспособности API
 app.get("/health", (req, res) => {
@@ -65,6 +65,9 @@ app.get("/health", (req, res) => {
   });
 });
 
+// Middleware для обработки ошибок должен идти ПОСЛЕ всех маршрутов
+app.use(errorMiddleware);
+
 // Обработка несуществующих маршрутов
 app.use((req, res) => {
   res.status(404).json({
@@ -72,19 +75,6 @@ app.use((req, res) => {
     error: {
       code: "NOT_FOUND",
       message: "Resource not found",
-    },
-  });
-});
-
-// Обработка ошибок
-app.use((err, req, res, next) => {
-  logger.error(`Unhandled error: ${err.message}`);
-
-  res.status(err.status || 500).json({
-    status: "error",
-    error: {
-      code: err.code || "INTERNAL_SERVER_ERROR",
-      message: err.message || "Internal server error",
     },
   });
 });
